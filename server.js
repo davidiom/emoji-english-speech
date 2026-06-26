@@ -33,35 +33,9 @@ let cachedToken = null;
 let tokenExpiresAt = 0;
 
 async function getBaiduToken() {
-  const url = new URL('https://aip.baidubce.com/oauth/2.0/token');
-  url.searchParams.set('grant_type', 'client_credentials');
-  url.searchParams.set('client_id', BAIDU_API_KEY);
-  url.searchParams.set('client_secret', BAIDU_SECRET_KEY);
-
-  console.log("Requesting token...");
-  console.log("API Key starts:", BAIDU_API_KEY?.slice(0, 6));
-  console.log("Secret starts:", BAIDU_SECRET_KEY?.slice(0, 6));
-
-  const res = await fetch(url, { method: 'POST' });
-
-  const text = await res.text();
-
-  console.log("HTTP:", res.status);
-  console.log("Response:", text);
-
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(text);
+  if (!BAIDU_API_KEY || !BAIDU_SECRET_KEY) {
+    throw new Error('Missing BAIDU_API_KEY or BAIDU_SECRET_KEY environment variable.');
   }
-
-  if (!res.ok || !data.access_token) {
-    throw new Error(`Token failed: ${text}`);
-  }
-
-  return data.access_token;
-}
 
   const now = Date.now();
   if (cachedToken && now < tokenExpiresAt - 60_000) {
