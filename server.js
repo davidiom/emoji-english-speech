@@ -18,13 +18,15 @@ const PORT = process.env.PORT || 3000;
 const BAIDU_API_KEY = process.env.BAIDU_API_KEY;
 const BAIDU_SECRET_KEY = process.env.BAIDU_SECRET_KEY;
 const BAIDU_APP_ID = process.env.BAIDU_APP_ID || '';
+
+// English short-speech model. Use BAIDU_DEV_PID to override if Baidu changes model IDs.
 const BAIDU_DEV_PID = Number(process.env.BAIDU_DEV_PID || 1737);
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 
 app.use(cors({
   origin: ALLOWED_ORIGIN === '*'
     ? true
-    : ALLOWED_ORIGIN.split(',').map(s => s.trim())
+    : ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean)
 }));
 
 app.use(express.json({ limit: '12mb' }));
@@ -38,20 +40,35 @@ async function getBaiduToken() {
   }
 
   const now = Date.now();
+
   if (cachedToken && now < tokenExpiresAt - 60_000) {
     return cachedToken;
   }
 
   const url = new URL('https://aip.baidubce.com/oauth/2.0/token');
   url.searchParams.set('grant_type', 'client_credentials');
-  url.searchParams.set('client_id', BAIDU_API_KEY);
-  url.searchParams.set('client_secret', BAIDU_SECRET_KEY);
+  url.searchParams.set('client_id', BAIDU_API_KEY.trim());
+  url.searchParams.set('client_secret', BAIDU_SECRET_KEY.trim());
+
+  console.log('Requesting Baidu token...');
+  console.log('API key present:', !!BAIDU_API_KEY, 'length:', BAIDU_API_KEY.length, 'starts:', BAIDU_API_KEY.slice(0, 6));
+  console.log('Secret key present:', !!BAIDU_SECRET_KEY, 'length:', BAIDU_SECRET_KEY.length, 'starts:', BAIDU_SECRET_KEY.slice(0, 6));
 
   const res = await fetch(url, { method: 'POST' });
-  const data = await res.json();
+  const text = await res.text();
+
+  console.log('Baidu token HTTP status:', res.status);
+  console.log('Baidu token response:', text);
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Baidu token returned non-JSON response: ${text}`);
+  }
 
   if (!res.ok || !data.access_token) {
-    throw new Error(`Baidu token failed: ${JSON.stringify(data)}`);
+    throw new Error(`Baidu token failed: ${text}`);
   }
 
   cachedToken = data.access_token;
@@ -95,7 +112,7 @@ function runFfmpegToWav(inputPath, outputPath) {
 
 async function convertBufferToWav16k(buffer, originalName = 'speech.webm') {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'emoji-speech-'));
-  const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'speech.webm';
+  const safeName = String(originalName || 'speech.webm').replace(/[^a-zA-Z0-9._-]/g, '_') || 'speech.webm';
   const inputPath = path.join(dir, safeName);
   const outputPath = path.join(dir, 'speech_16k.wav');
 
@@ -154,13 +171,17 @@ async function synthesizeWithBaidu(text, options = {}) {
   url.searchParams.set('tok', token);
   url.searchParams.set('cuid', String(options.cuid || 'emoji-english').slice(0, 60));
   url.searchParams.set('ctp', '1');
-  url.searchParams.set('lan', 'en');
 
-  url.searchParams.set('spd', String(options.speed || 5));
-  url.searchParams.set('pit', String(options.pitch || 5));
-  url.searchParams.set('vol', String(options.volume || 8));
-  url.searchParams.set('per', String(options.voice || 0));
-  url.searchParams.set('aue', '3');
+  // Baidu TTS commonly supports zh. Some accounts may not support lan=en.
+  // Try English first because Emoji English uses English text.
+  url.searchParams.set('lan', String(options.lang || 'en'));
+
+  // Baidu TTS controls.
+  url.searchParams.set('spd', String(options.speed || 5));   // 0-15
+  url.searchParams.set('pit', String(options.pitch || 5));   // 0-15
+  url.searchParams.set('vol', String(options.volume || 8));  // 0-15
+  url.searchParams.set('per', String(options.voice || 0));   // voice/person
+  url.searchParams.set('aue', '3');                          // mp3
 
   const res = await fetch(url);
   const contentType = res.headers.get('content-type') || '';
@@ -180,6 +201,20 @@ app.get('/api/health', (req, res) => {
     hasKeys: !!(BAIDU_API_KEY && BAIDU_SECRET_KEY),
     dev_pid: BAIDU_DEV_PID,
     tts: true
+  });
+});
+
+// TEMPORARY DEBUG ENDPOINT.
+// Remove this after checking your Render environment variables.
+app.get('/api/debug-env', (req, res) => {
+  res.json({
+    hasApiKey: !!BAIDU_API_KEY,
+    hasSecretKey: !!BAIDU_SECRET_KEY,
+    apiKeyLength: BAIDU_API_KEY ? BAIDU_API_KEY.length : 0,
+    secretKeyLength: BAIDU_SECRET_KEY ? BAIDU_SECRET_KEY.length : 0,
+    apiKeyStart: BAIDU_API_KEY ? BAIDU_API_KEY.slice(0, 6) : null,
+    secretKeyStart: BAIDU_SECRET_KEY ? BAIDU_SECRET_KEY.slice(0, 6) : null,
+    appId: BAIDU_APP_ID || null
   });
 });
 
@@ -236,7 +271,8 @@ app.get('/tts', async (req, res) => {
       speed: req.query.speed || 5,
       pitch: req.query.pitch || 5,
       volume: req.query.volume || 8,
-      voice: req.query.voice || 0
+      voice: req.query.voice || 0,
+      lang: req.query.lang || 'en'
     });
 
     res.setHeader('Content-Type', 'audio/mpeg');
